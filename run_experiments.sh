@@ -3,8 +3,7 @@
 # Ensure we're in the right directory
 cd /data/sandbox/QuickDraw-pytorch
 
-echo "Installing Brevitas and preparing data..."
-pip install git+https://github.com/Xilinx/brevitas.git@dev onnx onnxscript qonnx onnxoptimizer -q
+echo "Preparing data..."
 python DataUtils/prepare_data.py --download 0 --categories 10 -v 0.2
 
 echo "Running 8-bit QAT..."
