@@ -40,6 +40,10 @@ if __name__ == '__main__':
     # quantization
     parser.add_argument('--bit_width', '-bw', type=int,
                         default=8, choices=[8, 4, 2], help='quantization precision.')
+    parser.add_argument('--per_channel', action='store_true', default=False,
+                        help='use per-channel scaling for weights.')
+    parser.add_argument('--quant_input', action='store_true', default=False,
+                        help='quantize/binarize the input layer.')
     parser.add_argument('--export_qonnx', action='store_true', default=False,
                         help='export the best model to QONNX at the end of training.')
 
@@ -83,7 +87,9 @@ if __name__ == '__main__':
     print("Train images number: %d" % len(train_data))
     print("Test images number: %d" % len(test_data))
 
-    net = qtinycnn(num_classes, args.bit_width)
+    net = qtinycnn(num_classes, args.bit_width, 
+                   per_channel_scaling=args.per_channel, 
+                   quantize_input=args.quant_input)
 
     if args.ngpu > 1:
         net = nn.DataParallel(net)
@@ -184,7 +190,7 @@ if __name__ == '__main__':
         log.write('%s\n' % json.dumps(state))
         log.flush()
         print(state)
-        print("Best accuracy: %.4f" % best_accuracy)
+        print(f"Best accuracy: {best_accuracy:.4f}")
         print("*"*50)
 
     log.close()
