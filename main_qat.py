@@ -44,8 +44,12 @@ if __name__ == '__main__':
                         help='use per-channel scaling for weights.')
     parser.add_argument('--quant_input', action='store_true', default=False,
                         help='quantize/binarize the input layer.')
+    parser.add_argument('--no_narrow_range', action='store_true', default=False,
+                        help='disable narrow range (e.g. for 8-bit quantization use full [-128,127] instead of [-127,127]).')
     parser.add_argument('--export_qonnx', action='store_true', default=False,
                         help='export the best model to QONNX at the end of training.')
+    parser.add_argument('--export_qcdq', action='store_true', default=False,
+                        help='export the best model to QCDQ ONNX at the end of training.')
 
     # testing
     parser.add_argument('--test_bs', '-tb', type=int,
@@ -89,7 +93,8 @@ if __name__ == '__main__':
 
     net = qtinycnn(num_classes, args.bit_width, 
                    per_channel_scaling=args.per_channel, 
-                   quantize_input=args.quant_input)
+                   quantize_input=args.quant_input,
+                   narrow_range=not args.no_narrow_range)
 
     if args.ngpu > 1:
         net = nn.DataParallel(net)
@@ -220,4 +225,29 @@ if __name__ == '__main__':
             print(f"Successfully exported to {export_path}")
         except Exception as e:
             print(f"Failed to export QONNX: {e}")
+        print("*"*50)
+
+    if args.export_qcdq:
+        print("*"*50)
+        print("Exporting model to QCDQ ONNX...")
+        try:
+            from brevitas.export import export_onnx_qcdq
+            
+            # Load the best model
+            best_model_path = os.path.join(args.save_dir, f'model_{args.bit_width}bit.pytorch')
+            net.load_state_dict(torch.load(best_model_path))
+            net.eval()
+            
+            export_path = os.path.join(args.save_dir, f'model_{args.bit_width}bit_qcdq.onnx')
+            dummy_input = torch.randn(1, 1, args.image_size, args.image_size)
+            
+            model_to_export = net.module if isinstance(net, nn.DataParallel) else net
+            model_to_export = model_to_export.cpu()
+            dummy_input = dummy_input.cpu()
+            model_to_export.eval()
+            
+            export_onnx_qcdq(model_to_export, dummy_input, export_path=export_path, dynamo=False)
+            print(f"Successfully exported to {export_path}")
+        except Exception as e:
+            print(f"Failed to export QCDQ: {e}")
         print("*"*50)
