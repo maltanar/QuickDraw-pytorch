@@ -35,6 +35,7 @@ class QuantTinyCNN(nn.Module):
                             weight_scaling_per_output_channel=per_channel_scaling,
                             weight_narrow_range=narrow_range),
             nn.MaxPool2d(kernel_size=2),
+            nn.Flatten(),
             qnn.QuantReLU(bit_width=bit_width, narrow_range=narrow_range),
         )
         
@@ -54,7 +55,6 @@ class QuantTinyCNN(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
-        x = x.view(x.size(0), -1)
         x = self.fc(x)
         return x
 
