@@ -32,23 +32,23 @@ class ConvNet(nn.Module):
         """
         super(ConvNet, self).__init__()
         self.layer1 = nn.Sequential(
-            nn.Conv2d(1, 64, 3, 1, 1),
+            nn.Conv2d(1, 16, 3, 1, 1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2)
         )
         self.layer2 = nn.Sequential(
-            nn.Conv2d(64, 256, 3, 1, 1),
+            nn.Conv2d(16, 32, 3, 1, 1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2)
         )
         self.layer3 = nn.Sequential(
-            nn.Conv2d(256, 512, 3, 1, 1),
+            nn.Conv2d(32, 32, 3, 1, 1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2)
         )
         self.fc = nn.Sequential(
-            nn.Linear(512*3*3, 512),
-            nn.Linear(512, numclasses)
+            nn.Linear(32*3*3, 64),
+            nn.Linear(64, numclasses)
         )
 
     def forward(self, net):
