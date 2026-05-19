@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# Ensure we're in the right directory
-cd /data/sandbox/QuickDraw-pytorch
+# Ensure commands run from the repository root
+set -e
+cd "$(dirname "$0")"
 
 # Prepare data if not already done (assuming it is but just in case)
 # python DataUtils/prepare_data.py --download 0 --categories 10 -v 0.2
