@@ -14,7 +14,7 @@ from Model.nets import convnet
 # dataset
 from DataUtils.load_data import QD_Dataset
 
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser(description='Pytorch implementation of image classification based on Quick, Draw! data.',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
@@ -39,9 +39,11 @@ if __name__ == '__main__':
     parser.add_argument('--gamma', '-g', type=float, default=0.1,
                         help='lr is multiplied by gamma on step defined above.')
     parser.add_argument('--ngpu', type=int,
-                        default=1, help='0 or less for CPU.')
+                        default=0, help='0 or less for CPU.')
     parser.add_argument('--model', '-m', type=str,
-                        default='resnet34', help='choose the model.')
+                        default='convnet', help='choose the model.')
+    parser.add_argument('--export_onnx', action='store_true', default=False,
+                        help='export the best model to ONNX at the end of training.')
 
     # testing
     parser.add_argument('--test_bs', '-tb', type=int,
@@ -197,3 +199,30 @@ if __name__ == '__main__':
         print("*"*50)
 
     log.close()
+
+    if args.export_onnx:
+        print("*"*50)
+        print("Exporting model to ONNX...")
+        try:
+            # Load the best model checkpoint before exporting.
+            best_model_path = os.path.join(args.save_dir, 'model.pytorch')
+            net.load_state_dict(torch.load(best_model_path))
+            net.eval()
+
+            export_path = os.path.join(args.save_dir, 'model.onnx')
+            dummy_input = torch.randn(1, 1, args.image_size, args.image_size)
+
+            model_to_export = net.module if isinstance(net, nn.DataParallel) else net
+            model_to_export = model_to_export.cpu()
+            dummy_input = dummy_input.cpu()
+            model_to_export.eval()
+
+            torch.onnx.export(model_to_export, dummy_input, export_path, dynamo=False, opset_version=22)
+            print(f"Successfully exported to {export_path}")
+        except Exception as e:
+            print(f"Failed to export ONNX: {e}")
+        print("*"*50)
+
+
+if __name__ == '__main__':
+    main()

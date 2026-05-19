@@ -356,10 +356,14 @@ def convert_qdq_to_qop(model_path, output_path):
     onnx.save(new_model, output_path)
     print("Done!")
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Convert ONNX QDQ format to QOp format")
     parser.add_argument("input_onnx", help="Input ONNX model in QDQ format")
     parser.add_argument("output_onnx", help="Output ONNX model path in QOp format")
     args = parser.parse_args()
     
     convert_qdq_to_qop(args.input_onnx, args.output_onnx)
+
+
+if __name__ == "__main__":
+    main()

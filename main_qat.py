@@ -10,7 +10,7 @@ from tqdm import tqdm
 from Model.qnets import qtinycnn
 from DataUtils.load_data import QD_Dataset
 
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser(description='Pytorch implementation of QAT based on Quick, Draw! data.',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
@@ -251,3 +251,7 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Failed to export QCDQ: {e}")
         print("*"*50)
+
+
+if __name__ == '__main__':
+    main()
