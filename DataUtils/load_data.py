@@ -4,9 +4,15 @@ import torch
 import torch.utils.data as data
 
 
+DATAUTILS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 def load_dataset(root, mtype):
     num_classes = 0
-    with open("./DataUtils/class_names.txt", "r") as f:
+    class_names_path = os.path.join(root, "class_names.txt")
+    if not os.path.exists(class_names_path):
+        class_names_path = os.path.join(DATAUTILS_DIR, "class_names.txt")
+    with open(class_names_path, "r") as f:
         for line in f:
             num_classes = num_classes+1
 

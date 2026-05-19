@@ -2,7 +2,14 @@ import argparse
 import os
 import urllib.request
 import numpy as np
-from generate_data import generate_dataset
+
+try:
+    from .generate_data import generate_dataset
+except ImportError:
+    from generate_data import generate_dataset
+
+
+DATAUTILS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def download(nums=''):
@@ -11,7 +18,8 @@ def download(nums=''):
     - nums: str, specify how many categories you want to download to your device
     """
     # The file 'categories.txt' includes all categories you want to download as dataset
-    with open("./DataUtils/"+nums+"categories.txt", "r") as f:
+    categories_file = os.path.join(DATAUTILS_DIR, f"{nums}categories.txt")
+    with open(categories_file, "r") as f:
         classes = f.readlines()
     classes = [c.replace('\n', '').replace(' ', '_') for c in classes]
     print(classes)
@@ -19,7 +27,7 @@ def download(nums=''):
     for c in classes:
         cls_url = c.replace('_', '%20')
         path = base+cls_url+'.npy'
-        target_path = './Data/'+c+'.npy'
+        target_path = os.path.join('Data', c + '.npy')
         if os.path.exists(target_path):
             print('Skip download for existing file:', target_path)
             continue
@@ -27,7 +35,7 @@ def download(nums=''):
         urllib.request.urlretrieve(path, target_path)
 
 
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser(description='Download Quick, Draw! data from Google and then dump the raw data into cache.',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--categories', '-c', type=str, default=10, choices=['all', '100', '30', '10'],
@@ -49,3 +57,7 @@ if __name__ == '__main__':
     # Generate dataset
     generate_dataset(vfold_ratio=args.valfold, max_samples_per_class=args.max_samples_category,
                      show_imgs=args.show_random_imgs)
+
+
+if __name__ == '__main__':
+    main()

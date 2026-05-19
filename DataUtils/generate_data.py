@@ -5,6 +5,9 @@ import matplotlib.pyplot as plt
 from random import randint
 
 
+DATAUTILS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 def generate_dataset(rawdata_root="Data", target_root="Dataset", vfold_ratio=0.2, max_samples_per_class=5000, show_imgs=False):
     """
     args:
@@ -83,7 +86,7 @@ def generate_dataset(rawdata_root="Data", target_root="Dataset", vfold_ratio=0.2
     # save the data into disk, this will make loading process much
     # quicker later.
 
-    print("x_trian size: ")
+    print("x_train size: ")
     print(x_train.shape)
     print("\nx_test size: ")
     print(x_test.shape)
@@ -120,7 +123,8 @@ def generate_dataset(rawdata_root="Data", target_root="Dataset", vfold_ratio=0.2
     print("Great, data_cache has been saved into disk.")
     print("*"*50)
 
-    with open("./DataUtils/class_names.txt", 'w') as f:
+    class_names_path = os.path.join(target_root, "class_names.txt")
+    with open(class_names_path, 'w') as f:
         for i in range(len(class_names)):
             f.write(
                 "class name: "+class_names[i]+"\t\tnumber of samples: "+class_samples_num[i]+"\n")
