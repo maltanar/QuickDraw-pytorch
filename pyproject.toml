@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quickdraw-brevitas"
+version = "0.1.0"
+description = "QuickDraw training and quantization-aware training with Brevitas"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+  { name = "QuickDraw-brevitas contributors" }
+]
+dependencies = [
+  "numpy>=1.23",
+  "torch>=2.1",
+  "torchvision>=0.16",
+  "tqdm>=4.64",
+  "matplotlib>=3.7"
+]
+
+[project.optional-dependencies]
+qat = [
+  "brevitas @ git+https://github.com/Xilinx/brevitas.git@dev"
+]
+onnx = [
+  "onnx>=1.16",
+  "onnxscript>=0.1.0",
+  "qonnx>=0.4.0",
+  "onnxoptimizer>=0.3.13",
+  "emx-onnx-cgen>=0.2.0"
+]
+full = [
+  "brevitas @ git+https://github.com/Xilinx/brevitas.git@dev",
+  "onnx>=1.16",
+  "onnxscript>=0.1.0",
+  "qonnx>=0.4.0",
+  "onnxoptimizer>=0.3.13",
+  "emx-onnx-cgen>=0.2.0"
+]
+
+[project.scripts]
+quickdraw-train = "main:main"
+quickdraw-qat-train = "main_qat:main"
+quickdraw-prepare-data = "DataUtils.prepare_data:main"
+quickdraw-convert-qdq-to-qop = "convert_qdq_to_qop:main"
+
+[tool.setuptools]
+py-modules = ["main", "main_qat", "convert_qdq_to_qop"]
+
+[tool.setuptools.packages.find]
+include = ["DataUtils*", "Model*"]
+
+[tool.setuptools.package-data]
+DataUtils = ["*.txt"]
