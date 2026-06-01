@@ -3,6 +3,8 @@ import sys
 import onnx
 import numpy as np
 from onnx import helper, numpy_helper
+from qonnx.core.modelwrapper import ModelWrapper
+from qonnx.transformation.general import SortGraph
 
 def get_node_by_output(nodes, name):
     for node in nodes:
@@ -22,6 +24,29 @@ def get_initializer(graph, name):
         if init.name == name:
             return init
     return None
+
+def get_tensor_dtype(graph, name):
+    """Get the data type of a tensor from initializers or value_info."""
+    # Check initializers
+    for init in graph.initializer:
+        if init.name == name:
+            return init.data_type
+    
+    # Check value_info
+    for vi in graph.value_info:
+        if vi.name == name:
+            return vi.type.tensor_type.elem_type
+    
+    # Check graph inputs
+    for inp in graph.input:
+        if inp.name == name:
+            return inp.type.tensor_type.elem_type
+    
+    return None
+
+def is_int8_or_uint8(dtype):
+    """Check if dtype is int8 or uint8 in ONNX."""
+    return dtype in (onnx.TensorProto.UINT8, onnx.TensorProto.INT8)
 
 def convert_qdq_to_qop(model_path, output_path):
     print(f"Loading model from {model_path}...")
@@ -67,50 +92,59 @@ def convert_qdq_to_qop(model_path, output_path):
 
             if len(consumers) == 1 and consumers[0].op_type == 'QuantizeLinear':
                 # DequantizeLinear (x2) -> Conv -> QuantizeLinear  =>  QLinearConv
-                y_q = consumers[0]
-                y_scale = y_q.input[1]
-                y_zp = y_q.input[2] if len(y_q.input) > 2 else ""
-                q_conv_output = y_q.output[0]
+                # Check if quantized tensors are int8/uint8 (QLinearConv doesn't support sub-8-bit)
+                x_dtype = get_tensor_dtype(graph, x_q_name)
+                w_dtype = get_tensor_dtype(graph, w_q_name)
+                
+                if x_dtype is not None and w_dtype is not None and is_int8_or_uint8(x_dtype) and is_int8_or_uint8(w_dtype):
+                    y_q = consumers[0]
+                    y_scale = y_q.input[1]
+                    y_zp = y_q.input[2] if len(y_q.input) > 2 else ""
+                    q_conv_output = y_q.output[0]
 
-                inputs = [
-                    x_q_name, x_scale_name, x_zp,
-                    w_q_name, w_scale_name, w_zp,
-                    y_scale, y_zp
-                ]
-                if b_name:
-                    # Quantize bias to int32
-                    b_init = get_initializer(graph, b_name)
-                    xs_init = get_initializer(graph, x_scale_name)
-                    ws_init = get_initializer(graph, w_scale_name)
-                    
-                    if b_init and xs_init and ws_init:
-                        b_val = numpy_helper.to_array(b_init)
-                        xs_val = numpy_helper.to_array(xs_init)
-                        ws_val = numpy_helper.to_array(ws_init)
+                    inputs = [
+                        x_q_name, x_scale_name, x_zp,
+                        w_q_name, w_scale_name, w_zp,
+                        y_scale, y_zp
+                    ]
+                    if b_name:
+                        # Quantize bias to int32
+                        b_init = get_initializer(graph, b_name)
+                        xs_init = get_initializer(graph, x_scale_name)
+                        ws_init = get_initializer(graph, w_scale_name)
                         
-                        # QLinearConv expects bias to be 1D [C_out]
-                        bq_val = np.round(b_val.flatten() / (xs_val * ws_val)).astype(np.int32)
-                        bq_name = b_name + "_quantized"
-                        bq_init = numpy_helper.from_array(bq_val, bq_name)
-                        new_initializers.append(bq_init)
-                        inputs.append(bq_name)
-                    else:
-                        print(f"Warning: Could not quantize bias for {node.name}, using original bias name. This may fail.")
-                        inputs.append(b_name)
+                        if b_init and xs_init and ws_init:
+                            b_val = numpy_helper.to_array(b_init)
+                            xs_val = numpy_helper.to_array(xs_init)
+                            ws_val = numpy_helper.to_array(ws_init)
+                            
+                            # QLinearConv expects bias to be 1D [C_out]
+                            bq_val = np.round(b_val.flatten() / (xs_val * ws_val)).astype(np.int32)
+                            bq_name = b_name + "_quantized"
+                            bq_init = numpy_helper.from_array(bq_val, bq_name)
+                            new_initializers.append(bq_init)
+                            inputs.append(bq_name)
+                        else:
+                            print(f"Warning: Could not quantize bias for {node.name}, using original bias name. This may fail.")
+                            inputs.append(b_name)
 
-                new_node = helper.make_node(
-                    'QLinearConv',
-                    inputs=inputs,
-                    outputs=[q_conv_output],
-                    name=node.name + "_quant",
-                    **{a.name: helper.get_attribute_value(a) for a in node.attribute}
-                )
-                new_nodes.append(new_node)
-                outputs_to_remove.add(node.output[0])
-                outputs_to_remove.add(x_dq.output[0])
-                outputs_to_remove.add(w_dq.output[0])
-                outputs_to_remove.add(y_q.output[0])
-                print(f"Replaced {node.name} (Conv) with QLinearConv")
+                    new_node = helper.make_node(
+                        'QLinearConv',
+                        inputs=inputs,
+                        outputs=[q_conv_output],
+                        name=node.name + "_quant",
+                        **{a.name: helper.get_attribute_value(a) for a in node.attribute}
+                    )
+                    new_nodes.append(new_node)
+                    outputs_to_remove.add(node.output[0])
+                    outputs_to_remove.add(x_dq.output[0])
+                    outputs_to_remove.add(w_dq.output[0])
+                    outputs_to_remove.add(y_q.output[0])
+                    print(f"Replaced {node.name} (Conv) with QLinearConv")
+                else:
+                    # Quantized tensors are not int8/uint8, skip conversion
+                    print(f"Skipping {node.name}: quantized tensors are not int8/uint8 (x_dtype: {x_dtype}, w_dtype: {w_dtype}). Sub-8-bit types not supported by QLinearConv.")
+                    continue
 
             else:
                 # DequantizeLinear (x2) -> Conv  (no following QuantizeLinear)  =>  ConvInteger + Scaling
@@ -228,30 +262,39 @@ def convert_qdq_to_qop(model_path, output_path):
 
             if len(consumers) == 1 and consumers[0].op_type == 'QuantizeLinear':
                 # DequantizeLinear (x2) -> MatMul -> QuantizeLinear  =>  QLinearMatMul
-                y_q = consumers[0]
-                y_scale = y_q.input[1]
-                y_zp = y_q.input[2] if len(y_q.input) > 2 else ""
-                q_matmul_output = y_q.output[0]
+                # Check if quantized tensors are int8/uint8 (QLinearMatMul doesn't support sub-8-bit)
+                x_dtype = get_tensor_dtype(graph, x_q_name)
+                w_dtype = get_tensor_dtype(graph, w_q_name)
+                
+                if x_dtype is not None and w_dtype is not None and is_int8_or_uint8(x_dtype) and is_int8_or_uint8(w_dtype):
+                    y_q = consumers[0]
+                    y_scale = y_q.input[1]
+                    y_zp = y_q.input[2] if len(y_q.input) > 2 else ""
+                    q_matmul_output = y_q.output[0]
 
-                inputs = [
-                    x_q_name, x_scale_name, x_zp,
-                    w_q_name, w_scale_name, w_zp,
-                    y_scale, y_zp
-                ]
+                    inputs = [
+                        x_q_name, x_scale_name, x_zp,
+                        w_q_name, w_scale_name, w_zp,
+                        y_scale, y_zp
+                    ]
 
-                new_node = helper.make_node(
-                    'QLinearMatMul',
-                    inputs=inputs,
-                    outputs=[q_matmul_output],
-                    name=node.name + "_quant",
-                    **{a.name: helper.get_attribute_value(a) for a in node.attribute}
-                )
-                new_nodes.append(new_node)
-                outputs_to_remove.add(node.output[0])
-                outputs_to_remove.add(x_dq.output[0])
-                outputs_to_remove.add(w_dq.output[0])
-                outputs_to_remove.add(y_q.output[0])
-                print(f"Replaced {node.name} (MatMul) with QLinearMatMul")
+                    new_node = helper.make_node(
+                        'QLinearMatMul',
+                        inputs=inputs,
+                        outputs=[q_matmul_output],
+                        name=node.name + "_quant",
+                        **{a.name: helper.get_attribute_value(a) for a in node.attribute}
+                    )
+                    new_nodes.append(new_node)
+                    outputs_to_remove.add(node.output[0])
+                    outputs_to_remove.add(x_dq.output[0])
+                    outputs_to_remove.add(w_dq.output[0])
+                    outputs_to_remove.add(y_q.output[0])
+                    print(f"Replaced {node.name} (MatMul) with QLinearMatMul")
+                else:
+                    # Quantized tensors are not int8/uint8, skip conversion
+                    print(f"Skipping {node.name}: quantized tensors are not int8/uint8 (x_dtype: {x_dtype}, w_dtype: {w_dtype}). Sub-8-bit types not supported by QLinearMatMul.")
+                    continue
 
             else:
                 # DequantizeLinear (x2) -> MatMul  (no following QuantizeLinear)  =>  MatMulInteger + Scaling
@@ -312,36 +355,11 @@ def convert_qdq_to_qop(model_path, output_path):
             
     final_nodes.extend(new_nodes)
     
-    # Topological sort
-    ready_tensors = set([i.name for i in graph.input])
-    ready_tensors.update([i.name for i in graph.initializer])
-    
-    unsorted_nodes = final_nodes.copy()
-    sorted_nodes = []
-    
-    progress = True
-    while unsorted_nodes and progress:
-        progress = False
-        remaining = []
-        for node in unsorted_nodes:
-            if all(inp in ready_tensors or inp == "" for inp in node.input):
-                sorted_nodes.append(node)
-                for out in node.output:
-                    ready_tensors.add(out)
-                progress = True
-            else:
-                remaining.append(node)
-        unsorted_nodes = remaining
-        
-    if unsorted_nodes:
-        print("Warning: Graph may not be fully connected or has cycles!")
-        sorted_nodes.extend(unsorted_nodes)
-    
     # Create new graph
     new_initializers_total = list(graph.initializer) + new_initializers
     
     new_graph = helper.make_graph(
-        sorted_nodes,
+        final_nodes,
         graph.name,
         graph.input,
         graph.output,
@@ -351,9 +369,10 @@ def convert_qdq_to_qop(model_path, output_path):
     )
     
     new_model = helper.make_model(new_graph, producer_name='qdq-to-qop-converter', opset_imports=model.opset_import)
+    sorted_model = ModelWrapper(new_model).transform(SortGraph())
     
     print(f"Saving QOp model to {output_path}...")
-    onnx.save(new_model, output_path)
+    sorted_model.save(output_path)
     print("Done!")
 
 def main():
