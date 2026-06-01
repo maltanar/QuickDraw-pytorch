@@ -48,19 +48,209 @@ def is_int8_or_uint8(dtype):
     """Check if dtype is int8 or uint8 in ONNX."""
     return dtype in (onnx.TensorProto.UINT8, onnx.TensorProto.INT8)
 
+
+def _get_clip_bounds(graph, clip_node):
+    """Return scalar (min, max) for a Clip node, or (None, None) if unavailable."""
+    # Clip-11+ typically uses inputs for min/max.
+    if len(clip_node.input) >= 3:
+        min_init = get_initializer(graph, clip_node.input[1])
+        max_init = get_initializer(graph, clip_node.input[2])
+        if min_init is not None and max_init is not None:
+            min_val = float(np.asarray(numpy_helper.to_array(min_init)).reshape(-1)[0])
+            max_val = float(np.asarray(numpy_helper.to_array(max_init)).reshape(-1)[0])
+            return min_val, max_val
+
+    # Fallback for older Clip variants with attributes.
+    min_val = None
+    max_val = None
+    for attr in clip_node.attribute:
+        if attr.name == "min":
+            min_val = helper.get_attribute_value(attr)
+        elif attr.name == "max":
+            max_val = helper.get_attribute_value(attr)
+    if min_val is not None and max_val is not None:
+        return float(min_val), float(max_val)
+
+    return None, None
+
+
+def _infer_lowbit_qdtype(min_val, max_val):
+    """Infer low-bit quantized type from Clip range.
+
+    Returns (q_dtype, cast_dtype, suffix) or (None, None, None).
+    """
+    if min_val is None or max_val is None:
+        return None, None, None
+
+    mn = int(round(min_val))
+    mx = int(round(max_val))
+
+    # Signed 4-bit full range and narrow range.
+    if (mn, mx) in {(-8, 7), (-7, 7)}:
+        return onnx.TensorProto.INT4, onnx.TensorProto.INT8, "int4"
+
+    # Unsigned 4-bit full range and narrow range.
+    if (mn, mx) in {(0, 15), (0, 14)}:
+        return onnx.TensorProto.UINT4, onnx.TensorProto.UINT8, "uint4"
+
+    return None, None, None
+
+
+def rewrite_qcdq_lowbit_patterns(graph):
+    """Rewrite QuantizeLinear->Clip->DequantizeLinear into low-bit Q + Cast.
+
+    Pattern:
+    QuantizeLinear -> Clip -> DequantizeLinear
+
+    Rewritten as:
+    QuantizeLinear(low-bit output type) -> Cast(to int8/uint8) -> DequantizeLinear
+
+    This keeps DequantizeLinear input in 8-bit while preserving low-bit intent.
+    """
+    added_nodes = []
+    added_initializers = []
+    clip_outputs_to_remove = set()
+    processed_clip_outputs = set()
+    rewrites = 0
+
+    # Iterate over DQ nodes and match upstream Clip <- QuantizeLinear.
+    for dq_node in list(graph.node):
+        if dq_node.op_type != "DequantizeLinear":
+            continue
+
+        clip_node = get_node_by_output(graph.node, dq_node.input[0])
+        if clip_node is None or clip_node.op_type != "Clip":
+            continue
+        if clip_node.output and clip_node.output[0] in processed_clip_outputs:
+            continue
+        if len(clip_node.input) < 1:
+            continue
+
+        min_val, max_val = _get_clip_bounds(graph, clip_node)
+        q_dtype, cast_dtype, dtype_suffix = _infer_lowbit_qdtype(min_val, max_val)
+        if q_dtype is None:
+            continue
+
+        q_node = get_node_by_output(graph.node, clip_node.input[0])
+
+        # Case 1: QuantizeLinear -> Clip -> DequantizeLinear
+        if q_node is not None and q_node.op_type == "QuantizeLinear":
+            # Ensure QuantizeLinear has an explicit zero-point so output dtype is well-defined.
+            if len(q_node.input) < 3 or q_node.input[2] == "":
+                zp_base_name = q_node.name + "_zp_base"
+                if cast_dtype == onnx.TensorProto.INT8:
+                    zp_base_init = numpy_helper.from_array(np.array(0, dtype=np.int8), zp_base_name)
+                else:
+                    zp_base_init = numpy_helper.from_array(np.array(0, dtype=np.uint8), zp_base_name)
+                added_initializers.append(zp_base_init)
+                q_node.input.append(zp_base_name)
+
+            # Cast zero-point to low-bit dtype and feed it to QuantizeLinear.
+            old_zp_name = q_node.input[2]
+            new_zp_name = q_node.name + "_zp_" + dtype_suffix
+            zp_cast_name = q_node.name + "_zp_to_" + dtype_suffix
+            zp_cast_node = helper.make_node(
+                "Cast",
+                inputs=[old_zp_name],
+                outputs=[new_zp_name],
+                name=zp_cast_name,
+                to=q_dtype,
+            )
+            added_nodes.append(zp_cast_node)
+            q_node.input[2] = new_zp_name
+
+            # Rewire Q output through an explicit Cast back to 8-bit where Clip output used to be.
+            old_q_output = q_node.output[0]
+            lowbit_q_output = old_q_output + "_" + dtype_suffix
+            q_node.output[0] = lowbit_q_output
+
+            to_8bit_cast = helper.make_node(
+                "Cast",
+                inputs=[lowbit_q_output],
+                outputs=[clip_node.output[0]],
+                name=q_node.name + "_" + dtype_suffix + "_to_8bit",
+                to=cast_dtype,
+            )
+            added_nodes.append(to_8bit_cast)
+
+            clip_outputs_to_remove.add(clip_node.output[0])
+            processed_clip_outputs.add(clip_node.output[0])
+            rewrites += 1
+            continue
+
+        # Case 2: Constant(int8/uint8 initializer) -> Clip -> DequantizeLinear
+        src_init = get_initializer(graph, clip_node.input[0])
+        if src_init is None:
+            continue
+        if src_init.data_type not in (onnx.TensorProto.INT8, onnx.TensorProto.UINT8):
+            continue
+
+        src_val = numpy_helper.to_array(src_init)
+        clipped = np.clip(src_val, min_val, max_val)
+
+        # Create compact low-bit initializer and cast it back to 8-bit at the old Clip output.
+        if q_dtype == onnx.TensorProto.INT4:
+            clipped_vals = np.rint(clipped).astype(np.int8).reshape(-1).tolist()
+        else:
+            clipped_vals = np.rint(clipped).astype(np.uint8).reshape(-1).tolist()
+
+        if clip_node.name:
+            base_name = clip_node.name
+        else:
+            base_name = clip_node.output[0].replace("/", "_")
+        lowbit_init_name = base_name + "_const_" + dtype_suffix
+        lowbit_init = helper.make_tensor(
+            name=lowbit_init_name,
+            data_type=q_dtype,
+            dims=list(src_val.shape),
+            vals=clipped_vals,
+        )
+        added_initializers.append(lowbit_init)
+
+        const_cast_node = helper.make_node(
+            "Cast",
+            inputs=[lowbit_init_name],
+            outputs=[clip_node.output[0]],
+            name=base_name + "_" + dtype_suffix + "_to_8bit",
+            to=cast_dtype,
+        )
+        added_nodes.append(const_cast_node)
+
+        clip_outputs_to_remove.add(clip_node.output[0])
+        processed_clip_outputs.add(clip_node.output[0])
+        rewrites += 1
+
+    if rewrites == 0:
+        return 0
+
+    # Drop rewritten Clip nodes and append created Cast nodes.
+    kept_nodes = []
+    for node in graph.node:
+        if node.op_type == "Clip" and node.output and node.output[0] in clip_outputs_to_remove:
+            continue
+        kept_nodes.append(node)
+
+    kept_nodes.extend(added_nodes)
+
+    del graph.node[:]
+    graph.node.extend(kept_nodes)
+    graph.initializer.extend(added_initializers)
+
+    return rewrites
+
 def convert_qdq_to_qop(model_path, output_path):
     print(f"Loading model from {model_path}...")
     model = onnx.load(model_path)
     graph = model.graph
 
+    rewritten_qcdq = rewrite_qcdq_lowbit_patterns(graph)
+    if rewritten_qcdq > 0:
+        print(f"Rewrote {rewritten_qcdq} low-bit Clip pattern(s) to compact low-bit tensors + Cast.")
+
     new_nodes = []
     outputs_to_remove = set()
     
     new_initializers = []
-    
-    # 0 for DequantizeLinear after ConvInteger/MatMulInteger
-    zero_zp_init = numpy_helper.from_array(np.array(0, dtype=np.int32), "zero_zp_int32")
-    new_initializers.append(zero_zp_init)
 
     # Find all Conv nodes
     for node in graph.node:
@@ -185,7 +375,7 @@ def convert_qdq_to_qop(model_path, output_path):
                     
                     dq_node = helper.make_node(
                         'DequantizeLinear',
-                        inputs=[conv_int_out, comb_s_name, "zero_zp_int32"],
+                        inputs=[conv_int_out, comb_s_name],
                         outputs=[final_node_out],
                         name=node.name + "_dq"
                     )
@@ -330,7 +520,7 @@ def convert_qdq_to_qop(model_path, output_path):
                     
                     dq_node = helper.make_node(
                         'DequantizeLinear',
-                        inputs=[matmul_int_out, comb_s_name, "zero_zp_int32"],
+                        inputs=[matmul_int_out, comb_s_name],
                         outputs=[node.output[0]],
                         name=node.name + "_dq"
                     )
