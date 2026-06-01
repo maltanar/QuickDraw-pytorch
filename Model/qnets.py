@@ -63,5 +63,5 @@ class QuantTinyCNN(nn.Module):
         x = self.fc(x)
         return x
 
-def qtinycnn(num_classes, bit_width, per_channel_scaling=False, quantize_input=False, narrow_range=True):
-    return QuantTinyCNN(num_classes, bit_width, per_channel_scaling, quantize_input, narrow_range)
+def qtinycnn(num_classes, bit_width, per_channel_scaling=False, quantize_input=False, narrow_range=True, use_bias=False):
+    return QuantTinyCNN(num_classes, bit_width, per_channel_scaling, quantize_input, narrow_range, use_bias)
