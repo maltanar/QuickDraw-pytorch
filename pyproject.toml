@@ -29,7 +29,8 @@ onnx = [
   "onnxscript>=0.1.0",
   "qonnx>=0.4.0",
   "onnxoptimizer>=0.3.13",
-  "emx-onnx-cgen>=0.2.0"
+  "emx-onnx-cgen>=0.2.0",
+  "netron>=9.1.0"
 ]
 full = [
   "brevitas @ git+https://github.com/Xilinx/brevitas.git@dev",
